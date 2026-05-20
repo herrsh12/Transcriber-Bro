@@ -346,12 +346,9 @@ export default function TranscriptionApp() {
       setProgress(0)
       setIsProcessing(true)
 
-      // Verify payment with backend
       const response = await fetch("/api/verify-payment", {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           razorpay_order_id: paymentResponse.razorpay_order_id,
           razorpay_payment_id: paymentResponse.razorpay_payment_id,
@@ -366,8 +363,14 @@ export default function TranscriptionApp() {
         throw new Error(errorData.message || "Payment verification failed")
       }
 
-      // Poll for transcription status
-      await pollTranscriptionStatus(uploadedFile.filename)
+      const data = await response.json()
+
+      if (!data.jobId) {
+        throw new Error("No job ID returned from server")
+      }
+
+      // Poll using the real jobId the backend created
+      await pollTranscriptionStatus(data.jobId, uploadedFile.filename)
     } catch (err) {
       const errorMessage = err instanceof Error ? err.message : "Payment verification failed"
       setError(errorMessage)
@@ -377,45 +380,66 @@ export default function TranscriptionApp() {
     }
   }
 
-  const pollTranscriptionStatus = async (filename: string) => {
-    // Simulate polling for transcription status
-    const maxAttempts = 30
+  const pollTranscriptionStatus = async (jobId: string, filename: string) => {
+    const maxAttempts = 120 // 10 minutes at 5s intervals
     let attempts = 0
 
-    const poll = setInterval(async () => {
-      attempts++
-      setProgress(Math.min(90, (attempts / maxAttempts) * 90))
+    return new Promise<void>((resolve, reject) => {
+      const poll = setInterval(async () => {
+        try {
+          attempts++
+          setProgress(Math.min(90, (attempts / maxAttempts) * 90))
 
-      if (attempts >= maxAttempts) {
-        clearInterval(poll)
-        // For demo purposes, create mock transcription
-        const mockTranscription = `Transcription of ${filename}:
+          const response = await fetch(`/api/job-status?jobId=${encodeURIComponent(jobId)}`)
+          if (!response.ok) throw new Error("Failed to fetch job status")
 
-[0:00 - 0:15]
-"Hello, thank you for using our transcription service. This is a sample of how your audio files will be converted into accurate text."
+          const data = await response.json()
 
-[0:15 - 0:30]
-"Our service uses advanced AI technology to ensure high accuracy across multiple languages and accents."
+          if (data.status === "completed") {
+            clearInterval(poll)
 
-[0:30 - 0:45]
-"You'll receive timestamps for each segment, making it easy to reference specific parts of your audio."
+            // Fetch the actual transcription text
+            let transcriptionText = ""
+            try {
+              const txtResponse = await fetch(
+                `/api/download?file=${encodeURIComponent(filename)}&type=txt`
+              )
+              if (txtResponse.ok) {
+                transcriptionText = await txtResponse.text()
+              }
+            } catch {
+              transcriptionText = "Transcription complete — use the download button to get your file."
+            }
 
-This transcription demonstrates the quality and formatting you can expect from our professional service.`
+            const result: TranscriptionResult = {
+              id: uploadedFile?.id || jobId,
+              filename,
+              text: transcriptionText,
+              duration: uploadedFile?.duration || "",
+              timestamp: new Date(),
+            }
 
-        const result: TranscriptionResult = {
-          id: uploadedFile?.id || "",
-          filename: filename,
-          text: mockTranscription,
-          duration: uploadedFile?.duration || "0:00",
-          timestamp: new Date(),
+            setTranscriptions([result])
+            setProgress(100)
+            setIsProcessing(false)
+            setCurrentStep("success")
+            resolve()
+
+          } else if (data.status === "failed") {
+            clearInterval(poll)
+            reject(new Error(data.error || "Transcription failed on the server"))
+
+          } else if (attempts >= maxAttempts) {
+            clearInterval(poll)
+            reject(new Error("Transcription timed out — please contact support with your order ID"))
+          }
+
+        } catch (err) {
+          clearInterval(poll)
+          reject(err)
         }
-
-        setTranscriptions([result])
-        setProgress(100)
-        setIsProcessing(false)
-        setCurrentStep("success")
-      }
-    }, 1000)
+      }, 5000) // poll every 5 seconds
+    })
   }
 
   const copyToClipboard = async (text: string, id: string) => {

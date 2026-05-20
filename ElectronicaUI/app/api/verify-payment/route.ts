@@ -10,19 +10,10 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Missing payment verification data" }, { status: 400 })
     }
 
-    // Call the Express backend to verify payment
     const response = await fetch(`${BACKEND_URL}/verify-payment`, {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        razorpay_order_id,
-        razorpay_payment_id,
-        razorpay_signature,
-        file,
-        charge,
-      }),
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ razorpay_order_id, razorpay_payment_id, razorpay_signature, file, charge }),
     })
 
     const data = await response.json()
@@ -34,9 +25,11 @@ export async function POST(req: NextRequest) {
       )
     }
 
+    // Forward jobId so the frontend can poll job status
     return NextResponse.json({
       success: true,
-      message: data.message || "Payment verified and transcription started",
+      jobId: data.jobId,
+      message: data.message,
     })
   } catch (error) {
     console.error("Payment verification error:", error)
