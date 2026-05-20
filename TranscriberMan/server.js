@@ -1,360 +1,318 @@
-require('dotenv').config(); // Load environment variables from .env file
+require('dotenv').config();
 
-const express = require('express');
-const multer = require('multer');
-const path = require('path');
-const fs = require('fs');
-const ffmpeg = require('fluent-ffmpeg');
+const express  = require('express');
+const multer   = require('multer');
+const path     = require('path');
+const fs       = require('fs');
+const ffmpeg   = require('fluent-ffmpeg');
 const Razorpay = require('razorpay');
 const { Pool } = require('pg');
-const { exec } = require('child_process');
-const crypto = require('crypto');
-const { name } = require('commander');
+const { execFile } = require('child_process'); // safer than exec — no shell interpolation
+const crypto   = require('crypto');
 const archiver = require('archiver');
-const cors = require('cors');
-const app = express();
-const port = 3000; // Change port if necessary
+const cors     = require('cors');
 
-app.use(express.static(path.join(__dirname, 'public'))); 
+const app  = express();
+const port = process.env.PORT || 3000;
+
+app.use(express.static(path.join(__dirname, 'public')));
 
 const razorpay = new Razorpay({
-  key_id: process.env.RAZORPAY_KEY_ID,
+  key_id:     process.env.RAZORPAY_KEY_ID,
   key_secret: process.env.RAZORPAY_KEY_SECRET,
 });
 
-// PostgreSQL connection setup using environment variables
 const pool = new Pool({
-  user: process.env.PG_USER,
-  host: process.env.PG_HOST,
+  user:     process.env.PG_USER,
+  host:     process.env.PG_HOST,
   database: process.env.PG_DATABASE,
   password: process.env.PG_PASSWORD,
-  port: process.env.PG_PORT,
+  port:     process.env.PG_PORT,
 });
 
-// Body parsing middleware
-app.use(express.urlencoded({ extended: true })); // For form submissions
-app.use(express.json()); // For JSON data
+app.use(express.urlencoded({ extended: true }));
+app.use(express.json());
 app.use(cors());
 
-
-// Configure multer for file uploads
+// ─── Multer ──────────────────────────────────────────────────────────────────
 const storage = multer.memoryStorage();
-const upload = multer({ storage: storage });
+const upload  = multer({ storage });
 
-// Function to create a directory if it doesn't exist
-function createDirectoryIfNotExists(directoryPath) {
-  if (!fs.existsSync(directoryPath)) {
-    fs.mkdirSync(directoryPath);
-  }
+// ─── Directories ─────────────────────────────────────────────────────────────
+const uploadsDir = path.join(__dirname, 'uploads');
+const outputDir  = path.join(__dirname, 'output');
+
+function ensureDir(dir) {
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
 }
 
-// Initialize directories
-const uploadsDir = path.join(__dirname, 'uploads');
-const outputDir = path.join(__dirname, 'output');
+// ─── Helpers ─────────────────────────────────────────────────────────────────
+function formatDuration(seconds) {
+  const m = Math.floor(seconds / 60);
+  const s = Math.floor(seconds % 60);
+  return `${m}m ${s}s`;
+}
 
-// Route to handle root URL
+/**
+ * Sanitise a filename so it is safe to pass to execFile.
+ * Strips path separators and null bytes; rejects anything that looks
+ * like it escaped its directory.
+ */
+function sanitiseFilename(raw) {
+  const base = path.basename(raw); // strip any directory component
+  if (base !== raw) throw new Error('Invalid filename: path traversal detected');
+  if (/[\x00]/.test(base)) throw new Error('Invalid filename: null byte');
+  return base;
+}
+
+// ─── Routes ──────────────────────────────────────────────────────────────────
+
 app.get('/', (req, res) => {
-  createDirectoryIfNotExists(uploadsDir);
-  createDirectoryIfNotExists(outputDir);
+  ensureDir(uploadsDir);
+  ensureDir(outputDir);
   res.json({ status: 'Backend API running successfully' });
 });
 
-// Define the GET route for the upload page
 app.get('/upload', (req, res) => {
-  res.json({ message: 'Use frontend application for uploads' })
+  res.json({ message: 'Use frontend application for uploads' });
 });
 
-// Route to handle file upload and transcription
+// Upload audio → probe duration → return charge
 app.post('/upload', upload.single('audio'), async (req, res) => {
   try {
-    const fileName = req.file.originalname;
+    const fileName = sanitiseFilename(req.file.originalname);
     console.log('Received file:', fileName);
 
-    // Save the uploaded file temporarily
     const originalFilePath = path.join(uploadsDir, fileName);
     fs.writeFileSync(originalFilePath, req.file.buffer);
-    console.log('Uploaded file saved at:', originalFilePath);
 
-    // Save the uploaded file path and filename in the database
     await pool.query(
-      'INSERT INTO files (filename, originalFilePath) VALUES ($1, $2)',
+      'INSERT INTO files (filename, originalfilepath) VALUES ($1, $2)',
       [fileName, originalFilePath]
     );
 
-    // Calculate the duration of the audio file
     ffmpeg.ffprobe(originalFilePath, (err, metadata) => {
       if (err) {
-        console.error('Error getting audio duration:', err);
-        return res.status(500).send('Error calculating audio duration');
+        console.error('ffprobe error:', err);
+        return res.status(500).json({ error: 'Error calculating audio duration' });
       }
 
-      const duration = metadata.format.duration; // Duration in seconds
-      const durationInMinutes = duration / 60;
-      const formattedDuration = formatDuration(duration); // e.g., "5m 30s"
-      let charge;
+      const duration        = metadata.format.duration;
+      const durationMinutes = duration / 60;
+      const charge =
+        durationMinutes < 10 ? 65 :
+        durationMinutes < 30 ? 100 : 150;
 
-      if (durationInMinutes < 10) {
-        charge = 65; // For files less than 10 minutes
-      } else if (durationInMinutes < 30) {
-        charge = 100; // For files between 10 minutes and 30 minutes
-      } else {
-        charge = 150; // For files greater than 30 minutes
-      }
-
-      // Redirect to payment page with duration and charge information
-      res.json({
-        success: true,
-        file: fileName,
-        charge,
-        duration: formattedDuration
-      });
+      res.json({ success: true, file: fileName, charge, duration: formatDuration(duration) });
     });
   } catch (error) {
-    console.error('Error handling file upload:', error);
-    res.status(500).send('Internal Server Error');
+    console.error('Upload error:', error);
+    res.status(500).json({ error: 'Internal Server Error' });
   }
 });
 
+// Create Razorpay order
 app.post('/process-payment', async (req, res) => {
   try {
-    console.log(req.body)
     const { file, charge } = req.body;
 
-    // Create an order in Razorpay
     const order = await razorpay.orders.create({
-      amount: charge * 100, // amount in paise
+      amount:   charge * 100,
       currency: 'INR',
-      receipt: file,
+      receipt:  file,
     });
 
-    // Insert the order details into the PostgreSQL orders table
     await pool.query(
       'INSERT INTO orders (order_id, amount, currency, file_name) VALUES ($1, $2, $3, $4)',
       [order.id, charge, 'INR', file]
     );
 
-    // Return the order ID and amount in the response
-    res.json({
-      orderId: order.id,
-      amount: charge * 100,
-    });
+    res.json({ orderId: order.id, amount: charge * 100 });
   } catch (error) {
-    console.error('Error processing payment:', error);
-    res.status(500).send('Internal Server Error');
-  }
-});
-
-app.get('/payment-success', (req, res) => {
-  const file = req.query.file;
-  const charge = req.query.charge;
-  const transcriptionFilePath = `${file.slice(0, -4)}.txt`; // Assuming the transcription file has the same name as the audio file
-
-  res.render('payment-success', { file, charge, transcriptionFilePath });
-});
-
-app.get('/payment-failure', (req, res) => {
-  const file = req.query.file;
-  const charge = req.query.charge;
-
-  res.render('payment-failure', { file, charge });
-});
-
-// Payment page route
-app.get('/payment', (req, res) => {
-  const fileName = req.query.file;
-  const charge = req.query.charge;
-  const duration = req.query.duration; // Retrieve duration from query params
-
-  res.render('payment', { fileName, charge, duration });
-});
-
-async function transcribe(file) {
-  // Fetch the original file path from the database
-  const result = await pool.query('SELECT originalFilePath FROM files WHERE filename = $1', [file]);
-  console.log('Fetching original file path for filename:', file);
-  console.log('Query result:', result); // Log query result
-
-  if (result.rows.length === 0) {
-    console.error('No file found for transcription with filename:', file);
-    throw new Error('File not found for transcription');
-  }
-
-  const originalFilePath = path.join(uploadsDir, file); // Changed to use path.join for cross-platform compatibility
-  console.log('Original file path for transcription:', originalFilePath);
-
-  if (!fs.existsSync(originalFilePath)) {
-    console.error('File does not exist at the specified path:', originalFilePath);
-    throw new Error('File not found for transcription');
-  }
-
-  // Return a promise that resolves when transcription is completed
-  return new Promise((resolve, reject) => {
-    // Start the transcription process using Whisper AI
-    exec(`whisper "${originalFilePath}" --model base --language en --output_dir "${outputDir}"`, async (err, stdout, stderr) => {
-      if (err) {
-        console.error('Error during Whisper AI transcription:', err);
-        console.error('stderr:', stderr);
-        return reject('Error transcribing audio'); // Reject the promise on error
-      }
-
-      console.log('Transcription completed successfully:', stdout);
-
-      // Here, you can insert the transcription into the database
-      const transcriptionFilePath = path.join(outputDir, file.slice(0, -4) + ".txt"); // Removing the extension
-      const transcriptionText = fs.readFileSync(transcriptionFilePath, 'utf8'); // Read the transcription text
-
-      // Insert transcription into the database
-      await pool.query(
-        'INSERT INTO files (filename, transcription, created_at) VALUES ($1, $2, NOW())',
-        [file, transcriptionText]
-      );
-
-      // Clean up the original file after transcription
-      fs.unlink(originalFilePath, (cleanupErr) => {
-        if (cleanupErr) {
-          console.error('Error deleting the original file:', cleanupErr);
-        } else {
-          console.log('Original file deleted:', originalFilePath);
-        }
-      });
-
-      resolve(); // Resolve the promise after transcription is done
-    });
-  });
-}
-
-// Verify payment route
-app.post('/verify-payment', async (req, res) => {
-  const { razorpay_order_id, razorpay_payment_id, razorpay_signature, file, charge } = req.body;
-  const key_secret = process.env.RAZORPAY_KEY_SECRET;
-
-  // Generate the signature
-  const generated_signature = crypto.createHmac('sha256', key_secret)
-    .update(razorpay_order_id + '|' + razorpay_payment_id)
-    .digest('hex');
-
-  console.log('Generated Signature:', generated_signature); // Log generated signature
-  console.log('Received Signature:', razorpay_signature); // Log received signature
-
-  if (generated_signature === razorpay_signature) {
-    // Payment is verified
-    console.log('Payment verified successfully');
-
-    // Update order status to 'paid'
-    await pool.query(
-      'UPDATE orders SET status = $1, updated_at = NOW() WHERE order_id = $2',
-      ['paid', razorpay_order_id]
-    );
-
-    try {
-      await transcribe(file); // Wait for transcription to complete
-      return res.json({ success: true, message: 'Payment verified and transcription completed successfully' });
-    } catch (error) {
-      console.error('Transcription error:', error);
-      return res.status(500).json({ success: false, message: 'Transcription failed' });
-    }
-
-  } else {
-    // Payment verification failed, update the order status to 'failed'
-    console.error('Payment verification failed.'); // Log error
-    await pool.query(
-      'UPDATE orders SET status = $1, updated_at = NOW() WHERE order_id = $2',
-      ['failed', razorpay_order_id]
-    );
-
-    return res.status(400).json({ success: false, message: 'Payment verification failed' });
-  }
-});
-
-// Route to fetch order status
-app.get('/order-status/:orderId', async (req, res) => {
-  const { orderId } = req.params;
-
-  try {
-    const result = await pool.query('SELECT status FROM orders WHERE order_id = $1', [orderId]);
-
-    if (result.rows.length === 0) {
-      return res.status(404).json({ error: 'Order not found' });
-    }
-
-    const orderStatus = result.rows[0].status;
-    res.json({ orderId, status: orderStatus });
-  } catch (error) {
-    console.error('Error fetching order status:', error);
+    console.error('Payment processing error:', error);
     res.status(500).json({ error: 'Internal Server Error' });
   }
 });
 
-app.get('/download', (req, res) => {
-  const file = req.query.file; // This will include the file name with extension
-  const filePath = path.join(outputDir, file); // Adjust the path based on your output directory
+// Verify Razorpay signature → queue transcription job → respond immediately
+app.post('/verify-payment', async (req, res) => {
+  const { razorpay_order_id, razorpay_payment_id, razorpay_signature, file, charge } = req.body;
 
-  console.log('File path:', filePath); // Log the file path for debugging
+  // ── 1. Verify signature ───────────────────────────────────────────────────
+  const generated = crypto
+    .createHmac('sha256', process.env.RAZORPAY_KEY_SECRET)
+    .update(`${razorpay_order_id}|${razorpay_payment_id}`)
+    .digest('hex');
 
-  if (!fs.existsSync(filePath)) {
-      console.error('File does not exist:', filePath);
-      return res.status(404).send('File not found');
+  if (generated !== razorpay_signature) {
+    await pool.query(
+      'UPDATE orders SET status = $1, updated_at = NOW() WHERE order_id = $2',
+      ['failed', razorpay_order_id]
+    );
+    return res.status(400).json({ success: false, message: 'Payment verification failed' });
   }
 
-  res.download(filePath, (err) => {
-      if (err) {
-          console.error('Error downloading file:', err);
-          return res.status(404).send('File not found');
-      }
+  // ── 2. Mark order paid ────────────────────────────────────────────────────
+  await pool.query(
+    'UPDATE orders SET status = $1, updated_at = NOW() WHERE order_id = $2',
+    ['paid', razorpay_order_id]
+  );
+
+  // ── 3. Create a transcription job row ─────────────────────────────────────
+  const jobResult = await pool.query(
+    `INSERT INTO transcription_jobs (order_id, file_name, status)
+     VALUES ($1, $2, 'pending')
+     RETURNING job_id`,
+    [razorpay_order_id, file]
+  );
+  const jobId = jobResult.rows[0].job_id;
+
+  // ── 4. Respond immediately — don't wait for Whisper ───────────────────────
+  res.json({ success: true, jobId, message: 'Payment verified. Transcription started.' });
+
+  // ── 5. Run transcription in the background ────────────────────────────────
+  runTranscriptionJob(jobId, file).catch((err) => {
+    console.error(`Background job ${jobId} threw unexpectedly:`, err);
   });
 });
 
-// Route to handle downloading all transcription files as a zip
+// Poll transcription job status
+app.get('/job-status/:jobId', async (req, res) => {
+  try {
+    const result = await pool.query(
+      'SELECT status, error FROM transcription_jobs WHERE job_id = $1',
+      [req.params.jobId]
+    );
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'Job not found' });
+    }
+    res.json({ jobId: req.params.jobId, ...result.rows[0] });
+  } catch (err) {
+    console.error('job-status error:', err);
+    res.status(500).json({ error: 'Internal Server Error' });
+  }
+});
+
+// Existing order-status route (frontend still uses this)
+app.get('/order-status/:orderId', async (req, res) => {
+  try {
+    const result = await pool.query(
+      'SELECT status FROM orders WHERE order_id = $1',
+      [req.params.orderId]
+    );
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'Order not found' });
+    }
+    res.json({ orderId: req.params.orderId, status: result.rows[0].status });
+  } catch (err) {
+    console.error('order-status error:', err);
+    res.status(500).json({ error: 'Internal Server Error' });
+  }
+});
+
+// Download single file
+app.get('/download', (req, res) => {
+  const file     = sanitiseFilename(req.query.file || '');
+  const filePath = path.join(outputDir, file);
+
+  if (!fs.existsSync(filePath)) {
+    return res.status(404).json({ error: 'File not found' });
+  }
+  res.download(filePath);
+});
+
+// Download all transcription formats as a zip
 app.get('/download-all', async (req, res) => {
-  const file = req.query.file; // Assuming this is the base name for the audio file
-  const baseFileName = file.slice(0, -4); // Get the base file name without the extension
+  const file         = sanitiseFilename(req.query.file || '');
+  const baseName     = path.parse(file).name;
+  const zipFileName  = `${baseName}_transcriptions.zip`;
 
-  // Create a zip file for all transcriptions related to the file
-  const zipFileName = `${baseFileName}_transcriptions.zip`; // Name of the zip file
-  const zipFilePath = path.join(outputDir, zipFileName); // Path where the zip file will be stored temporarily
-
-  // Create a new archive instance
-  const archive = archiver('zip', {
-    zlib: { level: 9 } // Compression level
-  });
-
-  // Set the headers to download the zip file
-  res.setHeader('Content-Disposition', `attachment; filename=${zipFileName}`);
+  res.setHeader('Content-Disposition', `attachment; filename="${zipFileName}"`);
   res.setHeader('Content-Type', 'application/zip');
 
-  // Pipe the archive data to the response
+  const archive = archiver('zip', { zlib: { level: 9 } });
   archive.pipe(res);
 
   try {
-    // Filter files in the output directory that match the base name of the audio file
-    const transcriptionFiles = fs.readdirSync(outputDir).filter(fileName => {
-      // Only include files that start with the base file name (before the extension)
-      return fileName.startsWith(baseFileName);
-    });
-
-    // Add the matching transcription files to the zip archive
-    transcriptionFiles.forEach(file => {
-      const filePath = path.join(outputDir, file);
-      archive.file(filePath, { name: file });
-    });
-
-    // Finalize the archive (it will call the response after done)
+    const files = fs.readdirSync(outputDir).filter(f => f.startsWith(baseName));
+    files.forEach(f => archive.file(path.join(outputDir, f), { name: f }));
     await archive.finalize();
   } catch (err) {
-    console.error('Error creating zip archive:', err);
-    res.status(500).send('Error creating zip file');
+    console.error('download-all error:', err);
+    // Headers already sent at this point — just destroy
+    res.destroy();
   }
 });
 
+// ─── Background transcription job ────────────────────────────────────────────
 
-// Function to format duration from seconds to "Xm Ys" format
-function formatDuration(duration) {
-  const minutes = Math.floor(duration / 60);
-  const seconds = Math.floor(duration % 60);
-  return `${minutes}m ${seconds}s`;
+async function runTranscriptionJob(jobId, file) {
+  const safeFile        = sanitiseFilename(file);
+  const originalFilePath = path.join(uploadsDir, safeFile);
+
+  // Mark as processing
+  await pool.query(
+    'UPDATE transcription_jobs SET status = $1, updated_at = NOW() WHERE job_id = $2',
+    ['processing', jobId]
+  );
+
+  try {
+    if (!fs.existsSync(originalFilePath)) {
+      throw new Error(`Upload not found on disk: ${safeFile}`);
+    }
+
+    // Run Whisper via execFile — arguments passed as an array, never interpolated into a shell
+    await new Promise((resolve, reject) => {
+      execFile(
+        'whisper',
+        [originalFilePath, '--model', 'base', '--language', 'en', '--output_dir', outputDir],
+        (err, stdout, stderr) => {
+          if (err) {
+            console.error('Whisper error:', stderr);
+            return reject(new Error(stderr || err.message));
+          }
+          console.log('Whisper stdout:', stdout);
+          resolve();
+        }
+      );
+    });
+
+    // Read the .txt output Whisper produced
+    const txtPath         = path.join(outputDir, path.parse(safeFile).name + '.txt');
+    const transcriptionText = fs.readFileSync(txtPath, 'utf8');
+
+    // FIX: UPDATE the existing row instead of inserting a duplicate
+    await pool.query(
+      'UPDATE files SET transcription = $1, created_at = NOW() WHERE filename = $2',
+      [transcriptionText, safeFile]
+    );
+
+    // Mark job completed
+    await pool.query(
+      'UPDATE transcription_jobs SET status = $1, updated_at = NOW() WHERE job_id = $2',
+      ['completed', jobId]
+    );
+
+    // Clean up the uploaded audio file
+    fs.unlink(originalFilePath, (err) => {
+      if (err) console.error('Could not delete upload:', err);
+    });
+
+    console.log(`Job ${jobId} completed for file: ${safeFile}`);
+
+  } catch (err) {
+    console.error(`Job ${jobId} failed:`, err.message);
+    await pool.query(
+      'UPDATE transcription_jobs SET status = $1, error = $2, updated_at = NOW() WHERE job_id = $3',
+      ['failed', err.message, jobId]
+    );
+  }
 }
 
-// Start the server
+// ─── Start ────────────────────────────────────────────────────────────────────
+ensureDir(uploadsDir);
+ensureDir(outputDir);
+
 app.listen(port, () => {
-  console.log(`Server is running at http://localhost:${port}`);
+  console.log(`Server running at http://localhost:${port}`);
 });
