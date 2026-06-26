@@ -280,11 +280,11 @@ async function runTranscriptionJob(jobId, file) {
       throw new Error(`Upload not found on disk: ${safeFile}`);
     }
 
-    // Run Whisper via execFile — arguments passed as an array, never interpolated into a shell
+    // Run Whisper via python3 -m whisper (works when the whisper CLI isn't on PATH, e.g. Render)
     await new Promise((resolve, reject) => {
       execFile(
-        'whisper',
-        [originalFilePath, '--model', 'base', '--language', 'en', '--output_dir', outputDir],
+        'python3',
+        ['-m', 'whisper', originalFilePath, '--model', 'base', '--language', 'en', '--output_dir', outputDir],
         (err, stdout, stderr) => {
           if (err) {
             console.error('Whisper error:', stderr);

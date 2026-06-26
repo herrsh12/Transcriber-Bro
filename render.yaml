@@ -4,7 +4,7 @@ services:
     runtime: node
     rootDir: backend
     plan: free
-    buildCommand: npm ci
+    buildCommand: npm ci && pip3 install -r requirements.txt
     startCommand: npm start
     healthCheckPath: /
     envVars:
