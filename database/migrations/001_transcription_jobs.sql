@@ -16,3 +16,4 @@ CREATE TABLE IF NOT EXISTS transcription_jobs (
 -- Add columns to files table if they don't already exist
 ALTER TABLE files ADD COLUMN IF NOT EXISTS transcription TEXT;
 ALTER TABLE files ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT NOW();
+--work on this
