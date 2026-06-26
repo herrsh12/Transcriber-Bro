@@ -20,11 +20,15 @@ export async function POST(req: NextRequest) {
       body: backendFormData,
     })
 
-    if (!response.ok) {
-      throw new Error("Backend upload failed")
-    }
+    const data = await response.json().catch(() => ({}))
 
-    const data = await response.json()
+    if (!response.ok) {
+      console.error("Backend upload failed:", response.status, data)
+      return NextResponse.json(
+        { error: data.error || "Backend upload failed", backendUrl: BACKEND_URL },
+        { status: response.status }
+      )
+    }
 
     return NextResponse.json({
       success: true,
@@ -34,6 +38,13 @@ export async function POST(req: NextRequest) {
     })
   } catch (error) {
     console.error("Upload error:", error)
-    return NextResponse.json({ error: "Upload failed" }, { status: 500 })
+    return NextResponse.json(
+      {
+        error: "Upload failed — could not reach backend",
+        backendUrl: BACKEND_URL,
+        detail: error instanceof Error ? error.message : String(error),
+      },
+      { status: 502 }
+    )
   }
 }
