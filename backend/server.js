@@ -13,7 +13,7 @@ const archiver = require('archiver');
 const cors     = require('cors');
 
 const app  = express();
-const port = process.env.PORT || 3000;
+const port = process.env.PORT || 4000;
 
 app.use(express.static(path.join(__dirname, 'public')));
 
@@ -22,17 +22,36 @@ const razorpay = new Razorpay({
   key_secret: process.env.RAZORPAY_KEY_SECRET,
 });
 
-const pool = new Pool({
-  user:     process.env.PG_USER,
-  host:     process.env.PG_HOST,
-  database: process.env.PG_DATABASE,
-  password: process.env.PG_PASSWORD,
-  port:     process.env.PG_PORT,
-});
+function createPool() {
+  if (process.env.DATABASE_URL) {
+    return new Pool({
+      connectionString: process.env.DATABASE_URL,
+      ssl: { rejectUnauthorized: false },
+    });
+  }
+
+  return new Pool({
+    user:     process.env.PG_USER,
+    host:     process.env.PG_HOST,
+    database: process.env.PG_DATABASE,
+    password: process.env.PG_PASSWORD,
+    port:     process.env.PG_PORT || 5432,
+  });
+}
+
+const pool = createPool();
+
+const allowedOrigins = (process.env.FRONTEND_URL || 'http://localhost:3000')
+  .split(',')
+  .map((origin) => origin.trim())
+  .filter(Boolean);
 
 app.use(express.urlencoded({ extended: true }));
 app.use(express.json());
-app.use(cors());
+app.use(cors({
+  origin: allowedOrigins.length ? allowedOrigins : true,
+  credentials: true,
+}));
 
 // ─── Multer ──────────────────────────────────────────────────────────────────
 const storage = multer.memoryStorage();

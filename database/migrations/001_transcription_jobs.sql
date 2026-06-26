@@ -1,5 +1,5 @@
--- Run once against your audio_transcription database
--- before deploying the new server.js
+-- Run once against your Neon database (after 000_base_schema.sql)
+-- before deploying the backend to Render
 
 -- Job tracking table
 CREATE TABLE IF NOT EXISTS transcription_jobs (

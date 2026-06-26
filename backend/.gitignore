@@ -9,4 +9,5 @@
 
 # env files
 .env*
+!.env.example
 
