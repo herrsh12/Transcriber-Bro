@@ -9,6 +9,9 @@ import { Textarea } from "@/components/ui/textarea"
 import { Progress } from "@/components/ui/progress"
 import { Upload, FileAudio, Copy, Check, Loader2, Trash2, ArrowRight, Download, Package } from "lucide-react"
 import { cn } from "@/lib/utils"
+import { DemoBanner } from "@/components/demo-banner"
+
+const MAX_UPLOAD_MB = parseInt(process.env.NEXT_PUBLIC_MAX_UPLOAD_MB || "5", 10)
 
 interface UploadedFile {
   id: string
@@ -225,6 +228,11 @@ export default function TranscriptionApp() {
       setProgress(0)
       setError(null)
 
+      if (file.size > MAX_UPLOAD_MB * 1024 * 1024) {
+        setError(`File too large for portfolio demo. Max ${MAX_UPLOAD_MB} MB.`)
+        return
+      }
+
       // Create FormData for file upload
       const formData = new FormData()
       formData.append("audio", file)
@@ -249,7 +257,8 @@ export default function TranscriptionApp() {
       clearInterval(uploadInterval)
 
       if (!response.ok) {
-        throw new Error("Upload failed")
+        const errData = await response.json().catch(() => ({}))
+        throw new Error(errData.error || "Upload failed")
       }
 
       const data = await response.json()
@@ -467,6 +476,8 @@ export default function TranscriptionApp() {
             <p className="text-gray-600 text-lg font-light">Convert your audio files to text with precision</p>
           </div>
 
+          <DemoBanner />
+
           {/* Step Indicator */}
           <div className="mb-12">
             <div className="flex items-center justify-between">
@@ -531,7 +542,9 @@ export default function TranscriptionApp() {
 
                     <div className="space-y-2">
                       <h3 className="text-xl font-light text-black">Drop your audio files here</h3>
-                      <p className="text-gray-500 font-light">or click to browse • MP3, WAV, M4A, OGG, FLAC</p>
+                      <p className="text-gray-500 font-light">
+                        or click to browse • MP3, WAV, M4A, OGG, FLAC • max {MAX_UPLOAD_MB} MB
+                      </p>
                     </div>
 
                     <input
@@ -648,7 +661,7 @@ export default function TranscriptionApp() {
 
                   <div className="p-4 border border-gray-200 rounded">
                     <p className="text-sm font-light text-gray-700 mb-4">
-                      Click below to proceed with Razorpay payment. In production, this would open the Razorpay checkout modal.
+                      Razorpay checkout opens in test mode — no real charges. Transcription runs on my PC via GPU.
                     </p>
                   </div>
                 </div>

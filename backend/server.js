@@ -41,6 +41,18 @@ function createPool() {
 
 const pool = createPool();
 
+const WHISPER_MODEL = process.env.WHISPER_MODEL || 'base';
+const WHISPER_PYTHON = process.env.WHISPER_PYTHON || 'python3';
+const WHISPER_DEVICE = process.env.WHISPER_DEVICE || '';
+const MAX_CONCURRENT_JOBS = Math.max(
+  1,
+  parseInt(process.env.MAX_CONCURRENT_JOBS || '1', 10) || 1
+);
+const MAX_UPLOAD_MB = Math.max(
+  1,
+  parseInt(process.env.MAX_UPLOAD_MB || '5', 10) || 5
+);
+
 const allowedOrigins = (process.env.FRONTEND_URL || 'http://localhost:3000')
   .split(',')
   .map((origin) => origin.trim())
@@ -55,7 +67,10 @@ app.use(cors({
 
 // ─── Multer ──────────────────────────────────────────────────────────────────
 const storage = multer.memoryStorage();
-const upload  = multer({ storage });
+const upload  = multer({
+  storage,
+  limits: { fileSize: MAX_UPLOAD_MB * 1024 * 1024 },
+});
 
 // ─── Directories ─────────────────────────────────────────────────────────────
 const uploadsDir = path.join(__dirname, 'uploads');
@@ -89,7 +104,12 @@ function sanitiseFilename(raw) {
 app.get('/', (req, res) => {
   ensureDir(uploadsDir);
   ensureDir(outputDir);
-  res.json({ status: 'Backend API running successfully' });
+  res.json({
+    status: 'Backend API running successfully',
+    mode: process.env.PORTFOLIO_MODE === 'true' ? 'portfolio' : 'standard',
+    whisperModel: WHISPER_MODEL,
+    maxUploadMb: MAX_UPLOAD_MB,
+  });
 });
 
 app.get('/upload', (req, res) => {
@@ -99,6 +119,10 @@ app.get('/upload', (req, res) => {
 // Upload audio → probe duration → return charge
 app.post('/upload', upload.single('audio'), async (req, res) => {
   try {
+    if (!req.file) {
+      return res.status(400).json({ error: 'No file provided' });
+    }
+
     const fileName = sanitiseFilename(req.file.originalname);
     console.log('Received file:', fileName);
 
@@ -189,10 +213,8 @@ app.post('/verify-payment', async (req, res) => {
   // ── 4. Respond immediately — don't wait for Whisper ───────────────────────
   res.json({ success: true, jobId, message: 'Payment verified. Transcription started.' });
 
-  // ── 5. Run transcription in the background ────────────────────────────────
-  runTranscriptionJob(jobId, file).catch((err) => {
-    console.error(`Background job ${jobId} threw unexpectedly:`, err);
-  });
+  // ── 5. Queue transcription (limits concurrent Whisper runs to avoid OOM) ──
+  enqueueTranscriptionJob(jobId, file);
 });
 
 // Poll transcription job status
@@ -263,6 +285,34 @@ app.get('/download-all', async (req, res) => {
   }
 });
 
+// ─── Transcription job queue (one Whisper process at a time by default) ───────
+
+const transcriptionQueue = [];
+let activeTranscriptionJobs = 0;
+
+function enqueueTranscriptionJob(jobId, file) {
+  transcriptionQueue.push({ jobId, file });
+  void drainTranscriptionQueue();
+}
+
+async function drainTranscriptionQueue() {
+  if (activeTranscriptionJobs >= MAX_CONCURRENT_JOBS || transcriptionQueue.length === 0) {
+    return;
+  }
+
+  const { jobId, file } = transcriptionQueue.shift();
+  activeTranscriptionJobs += 1;
+
+  try {
+    await runTranscriptionJob(jobId, file);
+  } catch (err) {
+    console.error(`Background job ${jobId} threw unexpectedly:`, err);
+  } finally {
+    activeTranscriptionJobs -= 1;
+    void drainTranscriptionQueue();
+  }
+}
+
 // ─── Background transcription job ────────────────────────────────────────────
 
 async function runTranscriptionJob(jobId, file) {
@@ -280,11 +330,21 @@ async function runTranscriptionJob(jobId, file) {
       throw new Error(`Upload not found on disk: ${safeFile}`);
     }
 
-    // Run Whisper via python3 -m whisper (works when the whisper CLI isn't on PATH, e.g. Render)
+    const whisperArgs = [
+      '-m', 'whisper',
+      originalFilePath,
+      '--model', WHISPER_MODEL,
+      '--language', 'en',
+      '--output_dir', outputDir,
+    ];
+    if (WHISPER_DEVICE) {
+      whisperArgs.push('--device', WHISPER_DEVICE);
+    }
+
     await new Promise((resolve, reject) => {
       execFile(
-        'python3',
-        ['-m', 'whisper', originalFilePath, '--model', 'base', '--language', 'en', '--output_dir', outputDir],
+        WHISPER_PYTHON,
+        whisperArgs,
         (err, stdout, stderr) => {
           if (err) {
             console.error('Whisper error:', stderr);
@@ -331,6 +391,13 @@ async function runTranscriptionJob(jobId, file) {
 // ─── Start ────────────────────────────────────────────────────────────────────
 ensureDir(uploadsDir);
 ensureDir(outputDir);
+
+app.use((err, req, res, next) => {
+  if (err.code === 'LIMIT_FILE_SIZE') {
+    return res.status(413).json({ error: `File too large. Max ${MAX_UPLOAD_MB} MB.` });
+  }
+  next(err);
+});
 
 app.listen(port, () => {
   console.log(`Server running at http://localhost:${port}`);

@@ -1,0 +1,18 @@
+# Quick tunnel (URL changes each run — fine for testing):
+#   cloudflared tunnel --url http://localhost:4000
+#
+# Named tunnel (stable URL — recommended for Netlify):
+#   1. winget install Cloudflare.cloudflared
+#   2. cloudflared tunnel login
+#   3. cloudflared tunnel create transcriber-bro
+#   4. Copy this file to ~/.cloudflared/config.yml and fill in values
+#   5. cloudflared tunnel route dns transcriber-bro api.yourdomain.com
+#   6. cloudflared tunnel run transcriber-bro
+
+tunnel: TUNNEL_UUID
+credentials-file: C:\Users\YOUR_USER\.cloudflared\TUNNEL_UUID.json
+
+ingress:
+  - hostname: api.yourdomain.com
+    service: http://localhost:4000
+  - service: http_status:404

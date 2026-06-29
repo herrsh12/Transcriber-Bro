@@ -1,0 +1,18 @@
+services:
+  api:
+    build: ./backend
+    ports:
+      - "4000:4000"
+    env_file:
+      - ./backend/.env
+    environment:
+      PORT: 4000
+      MAX_CONCURRENT_JOBS: 1
+    volumes:
+      - api-uploads:/app/uploads
+      - api-output:/app/output
+    restart: unless-stopped
+
+volumes:
+  api-uploads:
+  api-output:
