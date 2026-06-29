@@ -1,6 +1,8 @@
+# base = Next.js app folder. publish must NOT equal base (clear "frontend" in Netlify UI if set).
 [build]
   base = "frontend"
   command = "npm run build"
+  publish = ".next"
 
 [[plugins]]
   package = "@netlify/plugin-nextjs"
