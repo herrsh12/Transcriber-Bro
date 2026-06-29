@@ -99,6 +99,22 @@ function sanitiseFilename(raw) {
   return base;
 }
 
+const TRANSCRIPTION_FORMATS = new Set(['txt', 'srt', 'vtt', 'json', 'tsv']);
+
+function resolveTranscriptionFile(uploadFilename, format) {
+  const ext = String(format || 'txt').toLowerCase().replace(/^\./, '');
+  if (!TRANSCRIPTION_FORMATS.has(ext)) {
+    throw new Error('Invalid format');
+  }
+  const baseName = path.parse(sanitiseFilename(uploadFilename)).name;
+  return {
+    baseName,
+    format: ext,
+    outputName: `${baseName}.${ext}`,
+    filePath: path.join(outputDir, `${baseName}.${ext}`),
+  };
+}
+
 // ─── Routes ──────────────────────────────────────────────────────────────────
 
 app.get('/', (req, res) => {
@@ -251,15 +267,47 @@ app.get('/order-status/:orderId', async (req, res) => {
   }
 });
 
-// Download single file
-app.get('/download', (req, res) => {
-  const file     = sanitiseFilename(req.query.file || '');
-  const filePath = path.join(outputDir, file);
-
-  if (!fs.existsSync(filePath)) {
-    return res.status(404).json({ error: 'File not found' });
+// List Whisper output formats available for an upload
+app.get('/formats', (req, res) => {
+  try {
+    const file = sanitiseFilename(req.query.file || '');
+    const { baseName } = resolveTranscriptionFile(file, 'txt');
+    const formats = [...TRANSCRIPTION_FORMATS].filter((ext) =>
+      fs.existsSync(path.join(outputDir, `${baseName}.${ext}`))
+    );
+    res.json({ file, baseName, formats });
+  } catch (err) {
+    res.status(400).json({ error: err.message });
   }
-  res.download(filePath);
+});
+
+// Download single transcription file (upload name + format extension)
+app.get('/download', (req, res) => {
+  try {
+    const file = sanitiseFilename(req.query.file || '');
+    const format = req.query.format || req.query.type || 'txt';
+    if (format === 'zip') {
+      return res.status(400).json({ error: 'Use /download-all for zip' });
+    }
+
+    const { outputName, filePath } = resolveTranscriptionFile(file, format);
+
+    if (!fs.existsSync(filePath)) {
+      return res.status(404).json({ error: 'File not found' });
+    }
+
+    if (req.query.inline === '1') {
+      const body = fs.readFileSync(filePath, 'utf8');
+      const contentType =
+        format === 'json' ? 'application/json' :
+        format === 'vtt' ? 'text/vtt' : 'text/plain';
+      return res.type(contentType).send(body);
+    }
+
+    res.download(filePath, outputName);
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
 });
 
 // Download all transcription formats as a zip

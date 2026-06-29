@@ -13,6 +13,27 @@ import { DemoBanner } from "@/components/demo-banner"
 
 const MAX_UPLOAD_MB = parseInt(process.env.NEXT_PUBLIC_MAX_UPLOAD_MB || "5", 10)
 
+const TRANSCRIPTION_FORMATS = ["txt", "srt", "vtt", "json", "tsv"] as const
+type TranscriptionFormat = (typeof TRANSCRIPTION_FORMATS)[number]
+
+async function fetchTranscriptionPreview(filename: string, format: string): Promise<string> {
+  const response = await fetch(
+    `/api/download?file=${encodeURIComponent(filename)}&format=${format}&preview=1`
+  )
+  if (!response.ok) {
+    throw new Error("Failed to load transcription")
+  }
+  let text = await response.text()
+  if (format === "json") {
+    try {
+      text = JSON.stringify(JSON.parse(text), null, 2)
+    } catch {
+      // keep raw JSON string
+    }
+  }
+  return text
+}
+
 interface UploadedFile {
   id: string
   file: File
@@ -29,6 +50,7 @@ interface TranscriptionResult {
   text: string
   duration: string
   timestamp: Date
+  availableFormats: TranscriptionFormat[]
 }
 
 type FlowStep = "upload" | "pricing" | "payment" | "processing" | "success" | "download"
@@ -183,6 +205,8 @@ export default function TranscriptionApp() {
   const [isProcessing, setIsProcessing] = useState(false)
   const [progress, setProgress] = useState(0)
   const [transcriptions, setTranscriptions] = useState<TranscriptionResult[]>([])
+  const [selectedFormat, setSelectedFormat] = useState<TranscriptionFormat>("txt")
+  const [loadingFormat, setLoadingFormat] = useState(false)
   const [copiedId, setCopiedId] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
 
@@ -407,17 +431,25 @@ export default function TranscriptionApp() {
           if (data.status === "completed") {
             clearInterval(poll)
 
-            // Fetch the actual transcription text
             let transcriptionText = ""
+            let availableFormats: TranscriptionFormat[] = ["txt"]
+
             try {
-              const txtResponse = await fetch(
-                `/api/download?file=${encodeURIComponent(filename)}&type=txt`
+              const formatsRes = await fetch(
+                `/api/formats?file=${encodeURIComponent(filename)}`
               )
-              if (txtResponse.ok) {
-                transcriptionText = await txtResponse.text()
+              if (formatsRes.ok) {
+                const formatsData = await formatsRes.json()
+                if (Array.isArray(formatsData.formats) && formatsData.formats.length > 0) {
+                  availableFormats = formatsData.formats
+                }
               }
+
+              const initialFormat = availableFormats.includes("txt") ? "txt" : availableFormats[0]
+              setSelectedFormat(initialFormat)
+              transcriptionText = await fetchTranscriptionPreview(filename, initialFormat)
             } catch {
-              transcriptionText = "Transcription complete — use the download button to get your file."
+              transcriptionText = "Transcription complete but preview could not be loaded. Try downloading below."
             }
 
             const result: TranscriptionResult = {
@@ -426,6 +458,7 @@ export default function TranscriptionApp() {
               text: transcriptionText,
               duration: uploadedFile?.duration || "",
               timestamp: new Date(),
+              availableFormats,
             }
 
             setTranscriptions([result])
@@ -463,6 +496,36 @@ export default function TranscriptionApp() {
 
   const deleteTranscription = (id: string) => {
     setTranscriptions((prev) => prev.filter((t) => t.id !== id))
+  }
+
+  const handleFormatChange = async (transcription: TranscriptionResult, format: TranscriptionFormat) => {
+    if (format === selectedFormat) return
+
+    setSelectedFormat(format)
+    setLoadingFormat(true)
+    try {
+      const text = await fetchTranscriptionPreview(transcription.filename, format)
+      setTranscriptions((prev) =>
+        prev.map((t) => (t.id === transcription.id ? { ...t, text } : t))
+      )
+    } catch (err) {
+      console.error("Format load error:", err)
+      setError(`Could not load .${format} format`)
+    } finally {
+      setLoadingFormat(false)
+    }
+  }
+
+  const downloadTranscription = (filename: string, format: TranscriptionFormat | "zip") => {
+    const url = `/api/download?file=${encodeURIComponent(filename)}&format=${format}`
+    const baseName = filename.includes(".") ? filename.slice(0, filename.lastIndexOf(".")) : filename
+    const downloadName = format === "zip" ? `${baseName}_transcriptions.zip` : `${baseName}.${format}`
+    const a = document.createElement("a")
+    a.href = url
+    a.download = downloadName
+    document.body.appendChild(a)
+    a.click()
+    document.body.removeChild(a)
   }
 
   return (
@@ -737,10 +800,35 @@ export default function TranscriptionApp() {
                         </Button>
                       </div>
 
+                      <div className="flex flex-wrap gap-2">
+                        {TRANSCRIPTION_FORMATS.map((format) => {
+                          const isAvailable = transcription.availableFormats.includes(format)
+                          return (
+                            <Button
+                              key={format}
+                              type="button"
+                              size="sm"
+                              variant={selectedFormat === format ? "default" : "outline"}
+                              disabled={!isAvailable || loadingFormat}
+                              onClick={() => handleFormatChange(transcription, format)}
+                              className={cn(
+                                "font-light uppercase text-xs tracking-wide",
+                                selectedFormat === format
+                                  ? "bg-black text-white hover:bg-gray-900"
+                                  : "border-gray-300 text-gray-700",
+                                !isAvailable && "opacity-40"
+                              )}
+                            >
+                              .{format}
+                            </Button>
+                          )
+                        })}
+                      </div>
+
                       <Textarea
-                        value={transcription.text}
+                        value={loadingFormat ? "Loading..." : transcription.text}
                         readOnly
-                        className="min-h-[200px] resize-none border-gray-200 bg-white text-black font-light leading-relaxed"
+                        className="min-h-[280px] resize-none border-gray-200 bg-white text-black font-light leading-relaxed font-mono text-sm"
                       />
 
                       <div className="flex gap-4">
@@ -767,39 +855,26 @@ export default function TranscriptionApp() {
 
                 {transcriptions.map((transcription) => (
                   <div key={transcription.id} className="space-y-4">
-                    <Button
-                      onClick={() => {
-                        const filename = transcription.filename
-                        const url = `/api/download?file=${encodeURIComponent(filename)}&type=txt`
-                        const a = document.createElement("a")
-                        a.href = url
-                        a.download = filename
-                        document.body.appendChild(a)
-                        a.click()
-                        document.body.removeChild(a)
-                      }}
-                      className="w-full bg-black text-white hover:bg-gray-900 py-6 flex items-center justify-center gap-2 text-base"
-                    >
-                      <Download className="w-5 h-5" />
-                      Download as TXT
-                    </Button>
+                    <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+                      {transcription.availableFormats.map((format) => (
+                        <Button
+                          key={format}
+                          onClick={() => downloadTranscription(transcription.filename, format)}
+                          variant="outline"
+                          className="border-black text-black hover:bg-gray-50 py-5 flex items-center justify-center gap-2"
+                        >
+                          <Download className="w-4 h-4" />
+                          .{format.toUpperCase()}
+                        </Button>
+                      ))}
+                    </div>
 
                     <Button
-                      onClick={() => {
-                        const filename = transcription.filename
-                        const url = `/api/download?file=${encodeURIComponent(filename)}&type=zip`
-                        const a = document.createElement("a")
-                        a.href = url
-                        a.download = filename
-                        document.body.appendChild(a)
-                        a.click()
-                        document.body.removeChild(a)
-                      }}
-                      variant="outline"
-                      className="w-full border-black text-black hover:bg-gray-50 py-6 flex items-center justify-center gap-2 text-base"
+                      onClick={() => downloadTranscription(transcription.filename, "zip")}
+                      className="w-full bg-black text-white hover:bg-gray-900 py-6 flex items-center justify-center gap-2 text-base"
                     >
                       <Package className="w-5 h-5" />
-                      Download as ZIP
+                      Download All Formats (ZIP)
                     </Button>
                   </div>
                 ))}
@@ -812,6 +887,7 @@ export default function TranscriptionApp() {
                       setUploadedFile(null)
                       setProgress(0)
                       setTranscriptions([])
+                      setSelectedFormat("txt")
                     }}
                     className="w-full border-black text-black hover:bg-gray-50"
                   >
