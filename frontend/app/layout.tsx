@@ -6,8 +6,8 @@ const _geist = Geist({ subsets: ["latin"] });
 const _geistMono = Geist_Mono({ subsets: ["latin"] });
 
 export const metadata: Metadata = {
-  title: 'Transcriber Bro',
-  description: 'Audio transcription portfolio demo — Whisper on local GPU',
+  title: 'Transcribe-Bro',
+  description: 'Transcribe-Bro — audio transcription portfolio demo',
   icons: {
     icon: [
       {
