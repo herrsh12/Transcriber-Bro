@@ -339,8 +339,8 @@ export default function TranscriptionApp() {
         key: process.env.NEXT_PUBLIC_RAZORPAY_KEY_ID,
         amount: data.amount, // Amount in paise
         currency: "INR",
-        name: "Transcribe-Bro",
-        description: `Transcribe-Bro — ${uploadedFile.filename}`,
+        name: "Scribestellar",
+        description: `Scribestellar — ${uploadedFile.filename}`,
         order_id: data.orderId,
         handler: async (response: any) => {
           // Verify payment on backend
@@ -535,7 +535,7 @@ export default function TranscriptionApp() {
         <div className="max-w-4xl mx-auto px-6 py-12">
           {/* Header */}
           <div className="text-center mb-16">
-            <h1 className="text-4xl font-light tracking-tight text-black mb-4">Transcribe-Bro</h1>
+            <h1 className="text-4xl font-light tracking-tight text-black mb-4">Scribestellar</h1>
             <p className="text-gray-600 text-lg font-light">Convert your audio files to text with precision</p>
           </div>
 

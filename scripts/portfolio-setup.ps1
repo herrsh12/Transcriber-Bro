@@ -6,7 +6,7 @@
 
 Write-Host @"
 
-Transcriber Bro - portfolio mode
+Scribestellar - portfolio mode
 ================================
 
 Terminal 1:  .\scripts\start-backend.ps1
