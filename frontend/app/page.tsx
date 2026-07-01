@@ -55,6 +55,10 @@ interface TranscriptionResult {
 
 type FlowStep = "upload" | "pricing" | "payment" | "processing" | "success" | "download"
 
+const BACKGROUND_RGB = "250, 250, 250"
+const TRAIL_LENGTH = 22
+const TRAIL_FADE_ALPHA = 0.09
+
 const DynamicBackground = () => {
   const canvasRef = useRef<HTMLCanvasElement>(null)
 
@@ -65,15 +69,24 @@ const DynamicBackground = () => {
     const ctx = canvas.getContext("2d")
     if (!ctx) return
 
+    let width = window.innerWidth
+    let height = window.innerHeight
+    let animationId = 0
+
     const resizeCanvas = () => {
-      canvas.width = window.innerWidth
-      canvas.height = window.innerHeight
+      const dpr = window.devicePixelRatio || 1
+      width = window.innerWidth
+      height = window.innerHeight
+      canvas.width = Math.round(width * dpr)
+      canvas.height = Math.round(height * dpr)
+      canvas.style.width = `${width}px`
+      canvas.style.height = `${height}px`
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
     }
 
     resizeCanvas()
     window.addEventListener("resize", resizeCanvas)
 
-    // Create floating dots with trail history
     const dots: Array<{
       x: number
       y: number
@@ -85,11 +98,10 @@ const DynamicBackground = () => {
       trail: Array<{ x: number; y: number; age: number }>
     }> = []
 
-    // Initialize dots
     for (let i = 0; i < 50; i++) {
       dots.push({
-        x: Math.random() * canvas.width,
-        y: Math.random() * canvas.height,
+        x: Math.random() * width,
+        y: Math.random() * height,
         vx: (Math.random() - 0.5) * 0.5,
         vy: (Math.random() - 0.5) * 0.5,
         size: Math.random() * 2 + 1,
@@ -99,53 +111,67 @@ const DynamicBackground = () => {
       })
     }
 
+    ctx.lineCap = "round"
+    ctx.lineJoin = "round"
+
     const animate = () => {
-      // Create a subtle fade effect instead of clearing completely
-      ctx.fillStyle = "rgba(255, 255, 255, 0.05)"
-      ctx.fillRect(0, 0, canvas.width, canvas.height)
+      // Fade toward solid background — restores motion trails without gradient banding or dark smears
+      ctx.fillStyle = `rgba(${BACKGROUND_RGB}, ${TRAIL_FADE_ALPHA})`
+      ctx.fillRect(0, 0, width, height)
 
       dots.forEach((dot, index) => {
-        // Add current position to trail
         dot.trail.push({ x: dot.x, y: dot.y, age: 0 })
 
-        // Limit trail length and update ages
-        if (dot.trail.length > 15) {
+        if (dot.trail.length > TRAIL_LENGTH) {
           dot.trail.shift()
         }
         dot.trail.forEach((point) => point.age++)
 
-        // Update position
         dot.x += dot.vx
         dot.y += dot.vy
 
-        // Update opacity for breathing effect
         dot.opacity += dot.fadeDirection * 0.002
         if (dot.opacity <= 0.05 || dot.opacity >= 0.3) {
           dot.fadeDirection *= -1
         }
 
-        // Wrap around edges
         if (dot.x < 0) {
-          dot.x = canvas.width
-          dot.trail = [] // Clear trail when wrapping
+          dot.x = width
+          dot.trail = []
         }
-        if (dot.x > canvas.width) {
+        if (dot.x > width) {
           dot.x = 0
           dot.trail = []
         }
         if (dot.y < 0) {
-          dot.y = canvas.height
+          dot.y = height
           dot.trail = []
         }
-        if (dot.y > canvas.height) {
+        if (dot.y > height) {
           dot.y = 0
           dot.trail = []
         }
 
-        // Draw trail
-        dot.trail.forEach((point, trailIndex) => {
-          const trailOpacity = dot.opacity * (1 - point.age / 15) * 0.3
-          const trailSize = dot.size * (1 - point.age / 20)
+        // Smooth trailing strokes along recent path
+        if (dot.trail.length >= 2) {
+          for (let i = 1; i < dot.trail.length; i++) {
+            const prev = dot.trail[i - 1]
+            const curr = dot.trail[i]
+            const progress = i / dot.trail.length
+            const trailOpacity = dot.opacity * progress * 0.35
+
+            ctx.beginPath()
+            ctx.moveTo(prev.x, prev.y)
+            ctx.lineTo(curr.x, curr.y)
+            ctx.strokeStyle = `rgba(0, 0, 0, ${trailOpacity})`
+            ctx.lineWidth = dot.size * (0.35 + progress * 0.65)
+            ctx.stroke()
+          }
+        }
+
+        dot.trail.forEach((point) => {
+          const trailOpacity = dot.opacity * (1 - point.age / TRAIL_LENGTH) * 0.35
+          const trailSize = dot.size * (1 - point.age / (TRAIL_LENGTH + 5))
 
           if (trailOpacity > 0.01 && trailSize > 0.1) {
             ctx.beginPath()
@@ -155,46 +181,43 @@ const DynamicBackground = () => {
           }
         })
 
-        // Draw main dot
         ctx.beginPath()
         ctx.arc(dot.x, dot.y, dot.size, 0, Math.PI * 2)
         ctx.fillStyle = `rgba(0, 0, 0, ${dot.opacity})`
         ctx.fill()
 
-        // Draw connections to nearby dots
         dots.slice(index + 1).forEach((otherDot) => {
           const dx = dot.x - otherDot.x
           const dy = dot.y - otherDot.y
           const distance = Math.sqrt(dx * dx + dy * dy)
 
           if (distance < 100) {
-            const opacity = ((100 - distance) / 100) * 0.08
+            const opacity = ((100 - distance) / 100) * 0.06
             ctx.beginPath()
             ctx.moveTo(dot.x, dot.y)
             ctx.lineTo(otherDot.x, otherDot.y)
             ctx.strokeStyle = `rgba(0, 0, 0, ${opacity})`
-            ctx.lineWidth = 0.5
+            ctx.lineWidth = 1
             ctx.stroke()
           }
         })
       })
 
-      requestAnimationFrame(animate)
+      animationId = requestAnimationFrame(animate)
     }
 
-    animate()
+    animationId = requestAnimationFrame(animate)
 
     return () => {
       window.removeEventListener("resize", resizeCanvas)
+      cancelAnimationFrame(animationId)
     }
   }, [])
 
   return (
-    <canvas
-      ref={canvasRef}
-      className="fixed inset-0 pointer-events-none z-0"
-      style={{ background: "linear-gradient(135deg, #ffffff 0%, #f8f9fa 100%)" }}
-    />
+    <div className="fixed inset-0 pointer-events-none z-0 bg-[#fafafa]" aria-hidden>
+      <canvas ref={canvasRef} className="absolute inset-0 h-full w-full" />
+    </div>
   )
 }
 
